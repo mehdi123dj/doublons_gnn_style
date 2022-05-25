@@ -252,3 +252,16 @@ V.shape
 # df=train
 # train[["name","categories"]]
 # df['all'] = df['name'].map(str)+' ' +df['categories'].map(str)
+
+#%%
+from sklearn.decomposition import PCA
+M=[]
+for j in range(700,20,-20):
+    pca = PCA(n_components=j)
+    pca.fit(V)
+    L=pca.explained_variance_ratio_
+    M.append([j,sum(L)])
+    
+#%%
+
+plt.plot([x[0] for x in M],[y[1]for y in M])
