@@ -1,124 +1,66 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Thu May 19 15:26:58 2022
 
-@author: remit
-"""
 
+from model import Encoder, train, test , corruption
+from Batch_dataset import MyOwnDataset, get 
 import torch 
-
+from torch_geometric.nn import DeepGraphInfomax
+from torch_geometric.loader.dataloader import DataLoader
+from typing import List
 import os 
-from torch_geometric.loader import DataLoader
-import copy 
-from model import train_link_classifier, test_link_classifier , GNN_link_classifier 
-from PersoDataset import MyOwnDataset
-import argparse
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+#########################################################################################################
+## parametre pour la creation du dataset, une fois celui-ci créé, il faudra aller le supprimer 
+## avant d'espérer un changement par la modification de ces paramètres (si non on accède à la dernière copie par défaut)
+#########################################################################################################
+root = './data'
+sampling_BS = 1000
+k_kouches = 3
+num_neighbors = [-1]*k_kouches
+num_samples = 30000
+n_chunks = 20
+DS = MyOwnDataset(root, sampling_BS, num_neighbors, num_samples, n_chunks)
+#########################################################################################################
+## parametres spécifiques à l'entrainement du modèle DeepGraphInfomax
+#########################################################################################################
+n_epoch = 50
+in_channels = 969
+hidden_channels = 512
+channels = [in_channels]+([hidden_channels]*k_kouches)
+train_BS = 512
+#########################################################################################################
 
 
-data_dir = "./data"
-models_dir = "./model"
+processed_dir = [os.path.join(root,"processed",u) for u in os.listdir(os.path.join(root,"processed"))]
+train_list = []
+#for idx in range(DS.length()):
+for idx in range(3):
+    train_list.extend(get(processed_dir,idx))
+
+train_loader = DataLoader(train_list,batch_size = train_BS,shuffle=True)
+
+print(train_loader.batch_size)
+
+model = DeepGraphInfomax(
+    hidden_channels = channels[-1],
+    encoder=Encoder(channels),
+    summary=lambda z, *args, **kwargs: torch.sigmoid(z.mean(dim=0)),
+    corruption=corruption
+                        )
+model = model.to(device)
+optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
 
 
-def main(): 
 
-    """
-    Collect arguments and run.
-    """
-
-    parser = argparse.ArgumentParser()
-
-    parser.add_argument(
-        "-lr",
-        "--learning-rate",
-        default=0.0001,
-        type=float,
-    )
-
-    parser.add_argument(
-        "-wd",
-        "--weight-decay",
-        default=0.,
-        type=float,
-    )
-
-    parser.add_argument(
-        "-sp",
-        "--save-path",
-        default=models_dir,
-        type=str,
-    )
-
-    parser.add_argument(
-        "-mn",
-        "--model-name",
-        default="batched_inductive_link_class.mdl",
-        type=str,
-    )
-
-    parser.add_argument(
-        "-fp",
-        "--data-fold",
-        default= data_dir,
-        type=str,
-    )
+for epoch in range(n_epoch):
+    print('epoch : {:d}'.format(epoch+1))
+    loss = train(model,optimizer,epoch,train_loader)
+    print('Loss:', loss)
 
 
-    parser.add_argument(
-        "-e",
-        "--number-epochs",
-        default=200,
-        type=int,
-    )
-    
-    parser.add_argument(
-        '--batch_size',
-        type=int,
-        default=2)
 
-    args = parser.parse_args()
-
-    ##########################################################################################################################################
-    ##########################################################################################################################################
-    
-    dataset=MyOwnDataset(data_dir)
-    print(len(dataset))
-    train_dataset = dataset[len(dataset)//8:]
-    train_loader = DataLoader(train_dataset, args.batch_size, shuffle=False)
-    test_dataset = dataset[:len(dataset)//8]
-    test_loader = DataLoader(test_dataset, args.batch_size)
-    
-    learning_rate = args.learning_rate
-    weight_decay = args.weight_decay
-    SAVEPATH = os.path.join(args.save_path,args.model_name)
-    nepochs = args.number_epochs
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(device)
-
-
-    ##########################################################################################################################################
-    ##########################################################################################################################################
-
-    HCs = {0:256,1:128, 2:64}
-    model = GNN_link_classifier(hidden_channels=HCs, out_channels=16,num_layers = 3).to(device)
-    optimizer = torch.optim.Adam(params=model.parameters(), lr=learning_rate)#, weight_decay = weight_decay)
-
-    ##########################################################################################################################################
-    ##########################################################################################################################################
-    best_test_auc = final_test_auc = 0
-    for epoch in range(1, nepochs+1):
-        loss = train_link_classifier(model,train_loader,optimizer,device)
-        #val_auc,val_rec,val_prec = test_link_classifier()
-        test_auc,test_rec,test_prec = test_link_classifier(model,test_loader,device)
-        if test_auc > best_test_auc:
-            best_model = copy.deepcopy(model)
-            best_test_auc = test_auc
-        print(f'Epoch: {epoch:03d}, Loss: {loss:.4f}'
-            f'Test Rec: {test_rec:.4f}, Test Prec: {test_prec:.4f},')
-    print(f'Final Test: {best_test_auc:.4f}')
-    torch.save(best_model,SAVEPATH)
-
-    ##########################################################################################################################################
-    ##########################################################################################################################################
-
-if __name__ == "__main__":
-    main()
+# On test avec train_loader car non supervisé 
+train_ratio = 0.75
+n_estim = 1000
+A1,A2,A3 = test(model,train_loader,sampling_BS,train_ratio,n_estim)
+print('Test Accuracy (features ,DGI only , DGI+features):' A1,A2,A3)

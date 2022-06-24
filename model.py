@@ -1,93 +1,87 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Wed May 18 10:30:39 2022
-
-@author: remit
-"""
 
 
 import torch
 from torch import nn
-from torch_geometric.nn import HeteroConv, GATConv, Linear, GCNConv, to_hetero, SAGEConv
+from torch_geometric.nn import  SAGEConv
 from sklearn.metrics import roc_auc_score, recall_score, precision_score
 import torch.nn.functional as F
+from tqdm import tqdm
+from imblearn.over_sampling import SMOTE
+from sklearn.ensemble import AdaBoostClassifier
 
-
-class GNN_link_classifier(torch.nn.Module):
-    def __init__(self, hidden_channels, out_channels, num_layers):
+class Encoder(nn.Module):
+    def __init__(self,channels):
         super().__init__()
-        self.num_layers = num_layers
-        self.convs_layer = torch.nn.ModuleList()
-        # self.lins = torch.nn.ModuleDict()
-        self.bns = torch.nn.ModuleList()
-        # self.mlps = torch.nn.ModuleDict()
-        for i in range(num_layers):
-            conv2 = SAGEConv((-1, -1), hidden_channels[i])
-            conv1 = GATConv((-1, -1), hidden_channels[i])
-            convs = torch.nn.ModuleList()
-            convs.append(conv1)
-            convs.append(conv2)
-            self.convs_layer.append(convs)
-            BN = torch.nn.BatchNorm1d(hidden_channels[i])
-            self.bns.append(BN)
-        #self.lin = Linear(hidden_channels[num_layers-1], out_channels)
-        self.mlp = nn.Linear(hidden_channels[num_layers-1]*2, 1)
+        # Channels contient les dimensions de toutes les couches en incluant la dimension d'entrée ( = channels[0])
+        self.convs = torch.nn.ModuleList([SAGEConv(channels[i], channels[i+1]) for i in range(len(channels)-1)])
+        self.activations = torch.nn.ModuleList([nn.PReLU(channels[i]) for i in range(1,len(channels))])
+
 
     def forward(self, x, edge_index):
-        for i in range(self.num_layers):
-            conv_layer = self.convs_layer[i]
-            BN = self.bns[i]
-            for elem in conv_layer:
-                x = elem(x, edge_index)
-            x = BN(x)
-        #out = self.lin(x)
-        #softmax = nn.Softmax(dim=0)
-        T1, T2 = edge_index[0], edge_index[1]
-        h_s = torch.index_select(x, 0, T1)
-        # print(h_s.size())
-        h_d = torch.index_select(x, 0, T2)
-        edge_emb = self.mlp(torch.cat([h_s, h_d], 1))
-        edge_emb = torch.reshape(edge_emb, (-1,))
-        #print(edge_emb)
-        #edge_emb = softmax(edge_emb)
-        #print(edge_emb)
-        # print(torch.reshape(edge_emb,(-1,)).size())
-        return edge_emb
+        for i in range(len(self.convs)):
+            x = self.convs[i](x.float(),edge_index)
+            x = self.activations[i](x)
+        return x
 
 
-def train_link_classifier(model, train_loader, optimizer, device):
+def corruption(x, edge_index):
+    return x[torch.randperm(x.size(0))], edge_index
+
+
+def train(model,optimizer,epoch,train_loader):
     model.train()
 
     total_loss = total_examples = 0
-    for data in train_loader:
-        data = data.to(device)
-        edge_label = data.edge_label
-        #print(data)
-        out = model(data.x, data.edge_index)
-        #print(out)
-        #print(edge_label)
-        loss = F.binary_cross_entropy_with_logits(out, edge_label)
-        #print(loss)
-        optimizer.zero_grad()
+    for data in tqdm(train_loader.dataset):
+
+        pos_z, neg_z, summary = model(data.x, data.edge_index)
+        loss = model.loss(pos_z, neg_z, summary)
         loss.backward()
         optimizer.step()
-        # print(out.size())
-        # print(edge_label.size())
-        total_loss += float(loss)*edge_label.size(0)
-        total_examples += edge_label.size(0)
-        
+        total_loss += float(loss) * pos_z.size(0)
+        total_examples += pos_z.size(0)
+
     return total_loss / total_examples
 
+
 @torch.no_grad()
-def test_link_classifier(model, test_loader, device):
+def test(model,test_loader,sampling_BS,train_ratio,n_estim):
     model.eval()
-    roc_auc = recall = precision = 0
-    m = nn.Sigmoid()
-    for data in test_loader:
-        data = data.to(device)
-        edge_label = data.edge_label
-        out = (m(model(data.x, data.edge_index))>0.5).float()
-        roc_auc += roc_auc_score(edge_label.detach().cpu().numpy(), out.detach().cpu().numpy())
-        recall += recall_score(edge_label.detach().cpu().numpy(), out.detach().cpu().numpy())
-        precision += precision_score(edge_label.detach().cpu().numpy(), out.detach().cpu().numpy())
-    return roc_auc/len(test_loader.dataset), recall/len(test_loader.dataset), precision/len(test_loader.dataset)
+    Ids = []
+    Z = []
+    Y = []
+    X = []
+    for data in tqdm(test_loader.dataset):
+        Ids.extend([(data.edge_original[0][i].item(),data.edge_original[1][i].item()) for i in range(sampling_BS)])
+        Zs.append(model(data.x, data.edge_index)[:sampling_BS])
+        Xs.append(data.x[:sampling_BS])
+        Ys.extend(data.y[:sampling_BS].tolist())
+
+    X = torch.cat(Xs, dim=0)
+    Z = torch.cat(Zs, dim=0)
+    Y = torch.tensor(Ys)
+
+    train_idx = random.choices([i for i in range(len(Y)],int(len(Y)*train_ratio))
+    test_idx = list(set([i for i in range(len(Y))])-set(train_idx))
+
+    x_train,x_test = X[train_idx],X[test_idx]
+    z_train,z_test = Z[train_idx],Z[test_idx]
+    y_train,y_test = Y[train_idx],Y[test_idx]
+
+    sm = SMOTE(sampling_strategy="auto")
+
+    x_train_sm, y_train_sm = sm.fit_resample(x_train, y_train)
+    classifier_1 = AdaBoostClassifier(n_estimators=n_estim).fit(x_train_sm, y_train_sm)
+    acc_1 = classifier_1.score(x_test,y_test)
+
+    z_train_sm, y_train_sm = sm.fit_resample(z_train, y_train)
+    classifier_2 = AdaBoostClassifier(n_estimators=n_estim).fit(z_train_sm, y_train_sm)
+    acc_2 = classifier_2.score(z_test,y_test)
+
+
+    xz_train_sm, y_train_sm = sm.fit_resample(torch.cat((x_train,z_train),dim=1), y_train)
+    classifier_3 = AdaBoostClassifier(n_estimators=n_estim).fit(xz_train_sm, y_train_sm)
+    acc_3 = classifier_3.score(torch.cat((x_test,z_test),dim=1),y_test)
+
+
+    return acc_1, acc_2, acc_3
