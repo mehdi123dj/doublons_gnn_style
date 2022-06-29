@@ -5,6 +5,10 @@ import numpy as np
 import pickle 
 from sklearn.neighbors import NearestNeighbors
 import os 
+from itertools import combinations
+import argparse
+
+
 
 def dist_to_edges(l_dist,l_idx,s,my_map):    
     filtred_l = np.where(l_dist<=s)
@@ -26,10 +30,14 @@ def get_identiques(groups):
 def overlap(A,B):
     return len(A.intersection(B))/min([len(A),len(B)])
 
+def idx_to_edge(idxs):
+    return list(set(edgify([(u,v) for u in idxs for v in idxs if u!=v])))
+
+
 def edgify(l):
     return list(set([(min([u,v]),max([u,v])) for u,v in l if u!=v]))
 
-def compute_Knns(df,E,T,k_dist,k_w2v,k_trans,dir_path)
+def compute_Knns(df,E,T,k_dist,k_w2v,k_trans,dir_path):
     group_cols = ['name','address']
 
     doublons_dict = dict()
@@ -103,7 +111,8 @@ def compute_Knns(df,E,T,k_dist,k_w2v,k_trans,dir_path)
     file = os.path.join(dir_path,'trans_idx_dict.pkl')
     with open(file,"wb") as dict_file:
         pickle.dump(trans_idx_dict,dict_file)
-
+    
+    return dist_dist_dict,dist_idx_dict,w2v_dist_dict,w2v_idx_dict,trans_dist_dict,trans_idx_dict
 
 
 def compute_overlap(df,dist_dist_dict,dist_idx_dict,
@@ -134,7 +143,6 @@ def compute_overlap(df,dist_dist_dict,dist_idx_dict,
         w2v_idx  = w2v_idx_dict[pays][:,:k_w2v]
         trans_dist = trans_dist_dict[pays][:,:k_trans]
         trans_idx  = trans_idx_dict[pays][:,:k_trans]
-
 
         #########################################################################
         s_w2v = np.max(w2v_dist)
@@ -188,3 +196,67 @@ def compute_overlap(df,dist_dist_dict,dist_idx_dict,
     print("there are",len(edges),' susceptible doubles ')
     print("there are",len(all_edges),' susceptible doubles when adding identicals ')
 
+def main():
+
+    """
+    Collect arguments and run.
+    """
+
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument(
+        "-d",
+        "--data-dir",
+        default='./data/raw',
+        type=str,
+    )
+
+    parser.add_argument(
+        "-kd",
+        "--k-dist",
+        default=25,
+        type=int,
+    )
+    parser.add_argument(
+        "-kw",
+        "--k-w2v",
+        default=25,
+        type=int,
+    )
+
+    parser.add_argument(
+        "-kt",
+        "--k-trans",
+        default=25,
+        type=int,
+    )
+    args = parser.parse_args()
+    
+    data_dir = args.data_dir
+    df = pd.read_csv(os.path.join(data_dir,"train.csv"))
+
+    with open(os.path.join(data_dir,"W2V_Embeddings.pkl"),'rb') as file:
+        E = pickle.load(file)
+
+    with open(os.path.join(data_dir,"ID.pkl"),'rb') as file:
+        Ids = pickle.load(file)
+    
+    sort_index = np.argsort(Ids)
+    with open(os.path.join(data_dir,"Transformers_embeddings.pkl"),'rb') as file:
+        T = pickle.load(file)
+    T = np.array(T)
+    T = T[sort_index]
+    k_dist = args.k_dist
+    k_w2v = args.k_w2v
+    k_trans = args.k_trans
+
+    dist_dist_dict,dist_idx_dict,w2v_dist_dict,w2v_idx_dict,trans_dist_dict,trans_idx_dict = compute_Knns(df,E,T,k_dist,k_w2v,k_trans,data_dir)
+
+    compute_overlap(df,dist_dist_dict,dist_idx_dict,
+                        w2v_dist_dict,w2v_idx_dict,
+                        trans_dist_dict,trans_idx_dict,
+                        k_dist,k_w2v,k_trans,
+                        data_dir)
+
+if __name__ == "__main__":
+    main()

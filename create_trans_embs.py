@@ -16,6 +16,7 @@ import os
 import datetime
 from torch.utils.data import DataLoader, Dataset
 from sklearn.decomposition import PCA
+import argparse
 
 
 class TokenizedDataset(Dataset):
@@ -54,9 +55,8 @@ class Text2VecModel(nn.Module):
 
 
 
-def inference(ds,model):
-    BS = 256
-    NW = 2
+def inference(ds,model,BS,NW,device):
+
     loader = DataLoader(ds, batch_size=BS, shuffle=False, num_workers=NW,
                         pin_memory=False, drop_last=False)
     tbar = tqdm(loader, file=sys.stdout)
@@ -64,7 +64,7 @@ def inference(ds,model):
     vs = []
     with torch.no_grad():
         for idx, (ids, masks) in enumerate(tbar):
-            v = model(ids.cuda(), masks.cuda()).detach().cpu().numpy()
+            v = model(ids.to(device), masks.to(device)).detach().cpu().numpy()
             vs.append(v)
     return np.concatenate(vs)      
 
@@ -87,19 +87,17 @@ def match(df,df_drop,V):
     print(len(V_new))
     return V_new
 
-def Embed_transformers(df,destination_dir):
+def Embed_transformers(df,destination_dir,MAX_LEN,BS,NW,device):
     
-    MAX_LEN = 512 
     test = df
     test['text'] = test[['name', 'categories']].fillna('').agg(' '.join, axis=1)
     test=test.reset_index()
     test_drop=test.drop_duplicates(subset=['text'])
 
     tk=TokenizedDataset(test_drop, MAX_LEN)
-    text2vec_model = Text2VecModel()
-    text2vec_model = text2vec_model.cuda()
+    text2vec_model = Text2VecModel().to(device)
 
-    V = inference(tk,text2vec_model)
+    V = inference(tk,text2vec_model,BS,NW,device)
     print(len(V))
     V=match(test, test_drop, V)
     print("match done")
@@ -112,3 +110,52 @@ def Embed_transformers(df,destination_dir):
     pickle.dump(V,Emb_file)
 
 
+
+def main():
+
+    """
+    Collect arguments and run.
+    """
+
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument(
+        "-d",
+        "--data-dir",
+        default='./data/raw',
+        type=str,
+    )
+
+    parser.add_argument(
+        "-mxl",
+        "--max-length",
+        default= 512,
+        type=int,
+    )
+
+    parser.add_argument(
+        "-nw",
+        "--number-workers",
+        default= 2,
+        type=int,
+    )
+
+    parser.add_argument(
+        "-bs",
+        "--batch-size",
+        default= 4,
+        type=int,
+    )
+    args = parser.parse_args()
+    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')    
+    BS = args.batch_size
+    NW = args.number_workers
+    destination_dir = args.data_dir
+    MAX_LEN = args.max_length
+    df = pd.read_csv(os.path.join(args.data_dir,'train.csv'))
+    Embed_transformers(df,destination_dir,MAX_LEN,BS,NW,device)
+
+
+    
+if __name__ == "__main__":
+    main()

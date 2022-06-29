@@ -1,7 +1,12 @@
 from transformers import BertTokenizer
-
-
-#tokenizer = BertTokenizer.from_pretrained('bert-base-multilingual-uncased')
+import pandas as pd 
+import os 
+import gensim
+import numpy as np 
+import pickle 
+import argparse
+from gensim.models import Word2Vec 
+import gensim.downloader
 
 
 def generate_sentences(df,cat_cols):
@@ -14,7 +19,7 @@ def generate_sentences(df,cat_cols):
 def cat2vec(sentences,model,tokenizer):
     vocab = model.index2word
     feature_vector = np.zeros((len(sentences),model.vectors.shape[1]))
-    vocab = c2v_model.index2word
+    vocab = model.index2word
     index = { vocab[i]: i for i in range(len(vocab))}
     for i in range(len(sentences)):
         s = sentences[i].lower()
@@ -44,3 +49,27 @@ def Embed_w2v(df,tokenizer,destination_dir):
 
     Emb_file = open(os.path.join(destination_dir,'W2V_Embeddings.pkl'),"wb")
     pickle.dump(E,Emb_file)
+
+def main():
+
+    """
+    Collect arguments and run.
+    """
+
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument(
+        "-d",
+        "--data-dir",
+        default='./data/raw',
+        type=str,
+    )
+
+    args = parser.parse_args()
+    tokenizer = BertTokenizer.from_pretrained('bert-base-multilingual-uncased')
+    df = pd.read_csv(os.path.join(args.data_dir,'train.csv'))
+    Embed_w2v(df,tokenizer,args.data_dir)
+
+    
+if __name__ == "__main__":
+    main()

@@ -64,6 +64,7 @@ def process_chunk(data,
     sample_map = {s : i for i,s in enumerate(sample)}
     sub_graph_edge_index,sub_graph_edge_label = subgraph(subset = sample, edge_index = data.edge_index,
                                     edge_attr = data.edge_label ,relabel_nodes= False)
+
     new_data =  Data(
                 edge_index = sub_graph_edge_index,
                 edge_label = sub_graph_edge_label,
@@ -131,7 +132,7 @@ class MyOwnDataset(InMemoryDataset):
 
     @property 
     def raw_file_names(self):
-        return ['labled_edges.pkl','ID600k.pkl',"Transformers_embeddings_600k.pkl",'W2V_Embeddings.pkl','train.csv']
+        return ['labled_edges.pkl','ID.pkl',"Transformers_embeddings.pkl",'W2V_Embeddings.pkl','train.csv']
 
     @property
     def processed_file_names(self):
@@ -185,9 +186,8 @@ class MyOwnDataset(InMemoryDataset):
         shuffled_idx = np.array([i for i in range(len(df))])
         random.shuffle(shuffled_idx)
         chunk_list = np.array_split(shuffled_idx, self.n_chunks)
-        #data_list = []
         for i,chunk in enumerate(chunk_list):
-            print(i)
+            print("processing chunk: ",i)
             loader,idx_map = process_chunk(data,X,chunk,df,self.BS,self.num_neighbors,self.num_samples)
             torch.save(loader, self.processed_paths[i])
         
@@ -198,3 +198,5 @@ class MyOwnDataset(InMemoryDataset):
 
     def length(self):
         return len(self.processed_paths)
+
+
