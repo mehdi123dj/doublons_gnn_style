@@ -1,93 +1,117 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Wed May 18 10:30:39 2022
-
-@author: remit
-"""
 
 
 import torch
+import numpy as np
 from torch import nn
-from torch_geometric.nn import HeteroConv, GATConv, Linear, GCNConv, to_hetero, SAGEConv
+from torch_geometric.nn import  SAGEConv
 from sklearn.metrics import roc_auc_score, recall_score, precision_score
 import torch.nn.functional as F
+from tqdm import tqdm
+from imblearn.over_sampling import SMOTE
+from sklearn.ensemble import AdaBoostClassifier
+import xgboost as xgb 
+import random 
+from sklearn.utils.class_weight import compute_sample_weight
 
-
-class GNN_link_classifier(torch.nn.Module):
-    def __init__(self, hidden_channels, out_channels, num_layers):
+class Encoder(nn.Module):
+    def __init__(self,channels):
         super().__init__()
-        self.num_layers = num_layers
-        self.convs_layer = torch.nn.ModuleList()
-        # self.lins = torch.nn.ModuleDict()
-        self.bns = torch.nn.ModuleList()
-        # self.mlps = torch.nn.ModuleDict()
-        for i in range(num_layers):
-            conv2 = SAGEConv((-1, -1), hidden_channels[i])
-            conv1 = GATConv((-1, -1), hidden_channels[i])
-            convs = torch.nn.ModuleList()
-            convs.append(conv1)
-            convs.append(conv2)
-            self.convs_layer.append(convs)
-            BN = torch.nn.BatchNorm1d(hidden_channels[i])
-            self.bns.append(BN)
-        #self.lin = Linear(hidden_channels[num_layers-1], out_channels)
-        self.mlp = nn.Linear(hidden_channels[num_layers-1]*2, 1)
+        # Channels contient les dimensions de toutes les couches en incluant la dimension d'entrée ( = channels[0])
+        self.convs = torch.nn.ModuleList([SAGEConv(channels[i], channels[i+1]) for i in range(len(channels)-1)])
+        self.activations = torch.nn.ModuleList([nn.PReLU(channels[i]) for i in range(1,len(channels))])
+
 
     def forward(self, x, edge_index):
-        for i in range(self.num_layers):
-            conv_layer = self.convs_layer[i]
-            BN = self.bns[i]
-            for elem in conv_layer:
-                x = elem(x, edge_index)
-            x = BN(x)
-        #out = self.lin(x)
-        #softmax = nn.Softmax(dim=0)
-        T1, T2 = edge_index[0], edge_index[1]
-        h_s = torch.index_select(x, 0, T1)
-        # print(h_s.size())
-        h_d = torch.index_select(x, 0, T2)
-        edge_emb = self.mlp(torch.cat([h_s, h_d], 1))
-        edge_emb = torch.reshape(edge_emb, (-1,))
-        #print(edge_emb)
-        #edge_emb = softmax(edge_emb)
-        #print(edge_emb)
-        # print(torch.reshape(edge_emb,(-1,)).size())
-        return edge_emb
+        for i in range(len(self.convs)):
+            x = self.convs[i](x.float(),edge_index)
+            x = self.activations[i](x)
+        return x
 
 
-def train_link_classifier(model, train_loader, optimizer, device):
+def corruption(x, edge_index):
+    return x[torch.randperm(x.size(0))], edge_index
+
+def summary(z,*args, **kwargs):
+    return torch.sigmoid(z.mean(dim=0))
+
+def train(model,optimizer,epoch,train_loader):
     model.train()
 
     total_loss = total_examples = 0
-    for data in train_loader:
-        data = data.to(device)
-        edge_label = data.edge_label
-        #print(data)
-        out = model(data.x, data.edge_index)
-        #print(out)
-        #print(edge_label)
-        loss = F.binary_cross_entropy_with_logits(out, edge_label)
-        #print(loss)
-        optimizer.zero_grad()
+    for data in tqdm(train_loader.dataset):
+
+        pos_z, neg_z, summary = model(data.x, data.edge_index)
+        loss = model.loss(pos_z, neg_z, summary)
         loss.backward()
         optimizer.step()
-        # print(out.size())
-        # print(edge_label.size())
-        total_loss += float(loss)*edge_label.size(0)
-        total_examples += edge_label.size(0)
-        
+        total_loss += float(loss) * pos_z.size(0)
+        total_examples += pos_z.size(0)
+
     return total_loss / total_examples
 
-@torch.no_grad()
-def test_link_classifier(model, test_loader, device):
-    model.eval()
-    roc_auc = recall = precision = 0
-    m = nn.Sigmoid()
-    for data in test_loader:
-        data = data.to(device)
-        edge_label = data.edge_label
-        out = (m(model(data.x, data.edge_index))>0.5).float()
-        roc_auc += roc_auc_score(edge_label.detach().cpu().numpy(), out.detach().cpu().numpy())
-        recall += recall_score(edge_label.detach().cpu().numpy(), out.detach().cpu().numpy())
-        precision += precision_score(edge_label.detach().cpu().numpy(), out.detach().cpu().numpy())
-    return roc_auc/len(test_loader.dataset), recall/len(test_loader.dataset), precision/len(test_loader.dataset)
+
+class XGboost_classifier():
+    def __init__(self,Graph_representation_model,test_loader,train_ratio,max_depth,tree_method,learning_rate,n_estimators):
+        self.classifier_model = xgb.XGBClassifier(max_depth = max_depth,tree_method = tree_method,learning_rate = learning_rate,n_estimators = n_estimators )
+        self.Graph_representation_model = Graph_representation_model
+        self.test_loader = test_loader
+        self.train_ratio = train_ratio
+        self.max_depth = max_depth
+        self.tree_method = tree_method
+        self.learning_rate = learning_rate
+        self.n_estimators = n_estimators
+
+    def embed(self):
+        print("using model to embed : ")
+        self.Graph_representation_model.eval()
+        Ids = []
+        Zs = []
+        Ys = []
+        Xs = []
+        for data in tqdm(self.test_loader.dataset):
+            Ids.extend([(data.edge_original[0][i].item(),data.edge_original[1][i].item()) for i in range(self.Graph_representation_model.sample_bs)])
+            pos_z,neg_z,summary = self.Graph_representation_model(data.x, data.edge_index)
+            Zs.append(pos_z[:self.Graph_representation_model.sample_bs])
+            Xs.append(data.x[:self.Graph_representation_model.sample_bs])
+            Ys.extend(data.y[:self.Graph_representation_model.sample_bs].tolist())
+
+        X = torch.cat(Xs, dim=0).detach().numpy()
+        Z = torch.cat(Zs, dim=0).detach().numpy()
+        Y = torch.tensor(Ys).detach().numpy()
+
+        return X,Y,Z
+    
+    def define_idx(self,Y):
+        train_idx = random.choices([i for i in range(len(Y))], k = int(len(Y)*self.train_ratio))
+        test_idx = list(set([i for i in range(len(Y))])-set(train_idx))
+        return train_idx,test_idx
+
+    def train_classifiers(self,X,Y,Z):
+
+        train_idx,test_idx = self.define_idx(Y)
+        x_train,x_test = X[train_idx],X[test_idx]
+        z_train,z_test = Z[train_idx],Z[test_idx]
+        y_train,y_test = Y[train_idx],Y[test_idx]
+
+        sample_weights = compute_sample_weight(
+            class_weight='balanced',
+            y=y_train )
+
+        classifier_model = self.classifier_model
+    
+        print("training classifier based on features only : ")
+        classifier_1 = classifier_model.fit(x_train, y_train,sample_weight=sample_weights)
+        predicted_1 = classifier_1.predict(x_test)
+        recall_1, precision_1 = recall_score(y_test,predicted_1), precision_score(y_test,predicted_1)
+    
+        print("training classifier based on embeddings only : ")
+        classifier_2 = classifier_model.fit(z_train, y_train,sample_weight=sample_weights)
+        predicted_2 = classifier_2.predict(z_test)
+        recall_2, precision_2 = recall_score(y_test,predicted_2), precision_score(y_test,predicted_2)
+
+        print("training classifier based on embeddings + fetaures : ")
+        classifier_3 =  classifier_model.fit(np.concatenate((x_train,z_train),axis=1), y_train,sample_weight=sample_weights) 
+        predicted_3 = classifier_3.predict(np.concatenate((x_test,z_test),axis=1))
+        recall_3, precision_3 = recall_score(y_test,predicted_3), precision_score(y_test,predicted_3)
+
+        return recall_1, precision_1, recall_2, precision_2, recall_3, precision_3
