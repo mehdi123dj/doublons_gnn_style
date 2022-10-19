@@ -1,7 +1,3 @@
-# Kaggle Competition-Foursquare
-
-Notebook for the kaggle competition  : https://www.kaggle.com/competitions/foursquare-location-matching  
-This competition has for goal to detect duplicates of some point of interests (POI) of different places like restaurants, bars, games...  
 
 
 
